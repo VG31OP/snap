@@ -24,21 +24,6 @@ const formatBytes = bytes => {
 };
 
 
-const toHex = buffer => Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-const sha256 = async text => {
-    const encoded = new TextEncoder().encode(text);
-    const digest = await crypto.subtle.digest('SHA-256', encoded);
-    return toHex(digest);
-};
-
-const roomLinkFromState = () => {
-    const params = new URLSearchParams({ room: window.roomState.roomId });
-    if (window.roomState.roomKeyHash) params.set('key', window.roomState.roomKeyHash);
-    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
-};
-
-
 class PeersUI {
 
     constructor() {
@@ -47,7 +32,6 @@ class PeersUI {
         Events.on('peers', e => this._onPeers(e.detail));
         Events.on('file-progress', e => this._onFileProgress(e.detail));
         Events.on('transfer-start', e => this._onTransferStart(e.detail));
-        Events.on('connection-type', e => this._onConnectionType(e.detail));
         Events.on('paste', e => this._onPaste(e));
     }
 
@@ -82,13 +66,6 @@ class PeersUI {
         const $peer = $(transfer.peerId);
         if (!$peer) return;
         $peer.ui.setTransferMeta(transfer);
-    }
-
-
-    _onConnectionType(detail) {
-        const $peer = $(detail.peerId);
-        if (!$peer) return;
-        $peer.ui.setConnectionBadge(detail.badge);
     }
 
     _clearPeers() {
@@ -156,7 +133,6 @@ class PeerUI {
         this.$progressText = el.querySelector('.progress-text');
         this.$fileInfo = el.querySelector('.file-info');
         this.$status = el.querySelector('.status');
-        this.$connectionBadge = el.querySelector('.connection-badge');
     }
 
     _bindListeners(el) {
@@ -608,102 +584,6 @@ class WebShareTargetUI {
     }
 }
 
-
-
-class RoomUI {
-    constructor(server) {
-        this._server = server;
-        this.$roomId = $('roomId');
-        this.$roomQr = $('roomQr');
-        this.$roomLink = $('roomLink');
-        this.$roomState = $('roomState');
-        this.$copy = $('copyRoomLink');
-        this.$regen = $('regenerateRoom');
-        this.$password = $('roomPassword');
-        this.$applyPassword = $('applyRoomPassword');
-        this.$broadcast = $('broadcastFile');
-        this.$broadcastInput = $('broadcastInput');
-
-        this.$copy.addEventListener('click', () => this._copyLink());
-        this.$regen.addEventListener('click', () => this._regenerateRoom());
-        this.$applyPassword.addEventListener('click', () => this._applyPassword());
-        this.$broadcast.addEventListener('click', () => this.$broadcastInput.click());
-        this.$broadcastInput.addEventListener('change', e => this._broadcastFiles(e));
-
-        Events.on('room-state-updated', () => this.render());
-        Events.on('peer-count-changed', e => this._onPeerCount(e.detail));
-        this.render();
-        this._startIdleTimer();
-    }
-
-    render() {
-        const link = roomLinkFromState();
-        this.$roomId.textContent = window.roomState.roomId;
-        this.$roomLink.value = link;
-        const encoded = encodeURIComponent(link);
-        this.$roomQr.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encoded}`;
-    }
-
-    _onPeerCount(count) {
-        if (count > 0) {
-            window.roomState.lastPeerSeenAt = Date.now();
-            this.$roomState.textContent = `${count} device${count > 1 ? 's' : ''} connected in room.`;
-            return;
-        }
-        this.$roomState.textContent = 'Waiting for devices in this room...';
-    }
-
-    _startIdleTimer() {
-        clearInterval(this._idleTimer);
-        this._idleTimer = setInterval(() => {
-            const noPeers = document.querySelectorAll('x-peer').length === 0;
-            if (!noPeers) return;
-            if (Date.now() - window.roomState.lastPeerSeenAt < 4 * 60 * 1000) return;
-            this._regenerateRoom(true);
-        }, 10000);
-    }
-
-    async _applyPassword() {
-        const value = this.$password.value.trim();
-        window.roomState.roomKeyHash = value ? await sha256(value) : '';
-        this._emitRoomUpdate();
-    }
-
-    _regenerateRoom(isAuto = false) {
-        window.roomState.roomId = (Math.random().toString(36).slice(2, 12)).replace(/[^a-z0-9]/gi, '').slice(0, 9);
-        window.roomState.roomKeyHash = '';
-        this.$password.value = '';
-        this._emitRoomUpdate();
-        if (isAuto) Events.fire('notify-user', 'Room expired due to inactivity. Created a new room.');
-    }
-
-    _emitRoomUpdate() {
-        const nextUrl = new URL(window.location.href);
-        nextUrl.searchParams.set('room', window.roomState.roomId);
-        if (window.roomState.roomKeyHash) nextUrl.searchParams.set('key', window.roomState.roomKeyHash);
-        else nextUrl.searchParams.delete('key');
-        history.replaceState({}, '', nextUrl.toString());
-        window.roomState.lastPeerSeenAt = Date.now();
-        Events.fire('room-updated', {
-            roomId: window.roomState.roomId,
-            roomKeyHash: window.roomState.roomKeyHash
-        });
-        this.render();
-        this.$roomState.textContent = 'Room updated. Share the new link or QR code.';
-    }
-
-    async _copyLink() {
-        await navigator.clipboard.writeText(this.$roomLink.value);
-        Events.fire('notify-user', 'Room link copied');
-    }
-
-    _broadcastFiles(e) {
-        const files = Array.from(e.target.files || []);
-        if (!files.length) return;
-        Events.fire('broadcast-files', files);
-        e.target.value = '';
-    }
-}
 
 class ShiroyaSend {
     constructor() {

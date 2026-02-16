@@ -2,29 +2,6 @@ window.URL = window.URL || window.webkitURL;
 window.isRtcSupported = !!(window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection);
 window.APP_CONFIG = window.APP_CONFIG || {};
 
-const generateRoomId = () => {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-    const length = 9;
-    const randomValues = new Uint32Array(length);
-    crypto.getRandomValues(randomValues);
-    let id = '';
-    for (let i = 0; i < length; i++) {
-        id += chars[randomValues[i] % chars.length];
-    }
-    return id;
-};
-
-const defaultRoomFromUrl = () => {
-    const parsed = new URL(window.location.href);
-    return parsed.searchParams.get('room') || generateRoomId();
-};
-
-window.roomState = {
-    roomId: defaultRoomFromUrl(),
-    roomKeyHash: new URL(window.location.href).searchParams.get('key') || '',
-    lastPeerSeenAt: Date.now()
-};
-
 class ServerConnection {
 
     constructor() {
@@ -110,11 +87,12 @@ class ServerConnection {
 
     _endpoint() {
         const configuredUrl = (window.APP_CONFIG.SIGNALING_URL || '').trim();
+        const webrtc = window.isRtcSupported ? '/webrtc' : '/fallback';
         if (configuredUrl) {
-            return configuredUrl;
+            if (configuredUrl.endsWith('/webrtc') || configuredUrl.endsWith('/fallback')) return configuredUrl;
+            return configuredUrl.replace(/\/$/, '') + '/server' + webrtc;
         }
         const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
-        const webrtc = window.isRtcSupported ? '/webrtc' : '/fallback';
         return `${protocol}://${location.host}/server${webrtc}`;
     }
 

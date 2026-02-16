@@ -57,34 +57,12 @@
     <main class="app-shell">
     <section class="drop-zone center column">
     <h2 class="drop-title">Share files</h2>
-    <section class="room-panel" aria-label="Room sharing controls">
-        <div class="room-row">
-            <div class="room-meta">
-                <div class="font-body2">Room</div>
-                <div id="roomId" class="font-subheading"></div>
-            </div>
-            <button id="regenerateRoom" class="button room-button" type="button">Regenerate Room</button>
-        </div>
-        <div class="room-row">
-            <input id="roomPassword" class="room-input" type="password" placeholder="Optional room password">
-            <button id="applyRoomPassword" class="button room-button" type="button">Apply Password</button>
-        </div>
-        <div class="qr-wrap center">
-            <img id="roomQr" alt="Room QR code" />
-        </div>
-        <div class="room-row">
-            <input id="roomLink" class="room-input" type="text" readonly>
-            <button id="copyRoomLink" class="button room-button" type="button">Copy Link</button>
-        </div>
-        <div class="font-body2" id="roomState">Room ready for global connections.</div>
-    </section>
     <!-- Peers -->
     <x-peers class="center"></x-peers>
     <x-no-peers>
         <h2>Open Shiroya Send on your other device</h2><p>Searching for devices worldwide...</p>
     </x-no-peers>
     <div class="loading-text">Searching for devices worldwide...</div>
-    <div class="room-row room-actions"><button id="broadcastFile" class="button room-button" type="button">Broadcast File</button><input id="broadcastInput" type="file" multiple hidden></div>
     <x-instructions desktop="Click to share files or right click to send a message" mobile="Tap to share files or long tap to send a message"></x-instructions>
     </section>
     </main>
