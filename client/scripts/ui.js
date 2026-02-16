@@ -2,8 +2,10 @@ const $ = query => document.getElementById(query);
 const $$ = query => document.body.querySelector(query);
 const isURL = text => /^((https?:\/\/|www)[^\s]+)/g.test(text.toLowerCase());
 window.isDownloadSupported = (typeof document.createElement('a').download !== 'undefined');
-window.isProductionEnvironment = !window.location.host.startsWith('localhost');
 window.iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+window.brandName = (window.APP_CONFIG && window.APP_CONFIG.BRAND_NAME) || 'Shiroya Send';
+document.title = window.brandName;
+
 
 // set display name
 Events.on('display-name', e => {
@@ -13,6 +15,30 @@ Events.on('display-name', e => {
     $displayName.title = me.deviceName;
 });
 
+const formatBytes = bytes => {
+    if (!bytes && bytes !== 0) return '';
+    if (bytes >= 1e9) return `${(Math.round(bytes / 1e8) / 10)} GB`;
+    if (bytes >= 1e6) return `${(Math.round(bytes / 1e5) / 10)} MB`;
+    if (bytes > 1000) return `${Math.round(bytes / 1000)} KB`;
+    return `${bytes} Bytes`;
+};
+
+
+const toHex = buffer => Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+const sha256 = async text => {
+    const encoded = new TextEncoder().encode(text);
+    const digest = await crypto.subtle.digest('SHA-256', encoded);
+    return toHex(digest);
+};
+
+const roomLinkFromState = () => {
+    const params = new URLSearchParams({ room: window.roomState.roomId });
+    if (window.roomState.roomKeyHash) params.set('key', window.roomState.roomKeyHash);
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+};
+
+
 class PeersUI {
 
     constructor() {
@@ -20,6 +46,8 @@ class PeersUI {
         Events.on('peer-left', e => this._onPeerLeft(e.detail));
         Events.on('peers', e => this._onPeers(e.detail));
         Events.on('file-progress', e => this._onFileProgress(e.detail));
+        Events.on('transfer-start', e => this._onTransferStart(e.detail));
+        Events.on('connection-type', e => this._onConnectionType(e.detail));
         Events.on('paste', e => this._onPaste(e));
     }
 
@@ -27,6 +55,7 @@ class PeersUI {
         if ($(peer.id)) return; // peer already exists
         const peerUI = new PeerUI(peer);
         $$('x-peers').appendChild(peerUI.$el);
+        Events.fire('peer-count-changed', $$('x-peers').children.length);
         setTimeout(e => window.animateBackground(false), 1750); // Stop animation
     }
 
@@ -39,17 +68,32 @@ class PeersUI {
         const $peer = $(peerId);
         if (!$peer) return;
         $peer.remove();
+        Events.fire('peer-count-changed', $$('x-peers').children.length);
     }
 
     _onFileProgress(progress) {
         const peerId = progress.sender || progress.recipient;
         const $peer = $(peerId);
         if (!$peer) return;
-        $peer.ui.setProgress(progress.progress);
+        $peer.ui.setProgress(progress);
+    }
+
+    _onTransferStart(transfer) {
+        const $peer = $(transfer.peerId);
+        if (!$peer) return;
+        $peer.ui.setTransferMeta(transfer);
+    }
+
+
+    _onConnectionType(detail) {
+        const $peer = $(detail.peerId);
+        if (!$peer) return;
+        $peer.ui.setConnectionBadge(detail.badge);
     }
 
     _clearPeers() {
         const $peers = $$('x-peers').innerHTML = '';
+        Events.fire('peer-count-changed', 0);
     }
 
     _onPaste(e) {
@@ -74,18 +118,21 @@ class PeerUI {
 
     html() {
         return `
-            <label class="column center" title="Click to send files or right click to send a text">
+            <label class="column center" title="Click to share files or right click to send a text">
                 <input type="file" multiple>
                 <x-icon shadow="1">
                     <svg class="icon"><use xlink:href="#"/></svg>
                 </x-icon>
+                <button type="button" class="send-file-btn">Send File</button>
                 <div class="progress">
-                  <div class="circle"></div>
-                  <div class="circle right"></div>
+                  <div class="progress-bar"></div>
                 </div>
+                <div class="progress-text font-body2"></div>
                 <div class="name font-subheading"></div>
                 <div class="device-name font-body2"></div>
+                <div class="file-info font-body2"></div>
                 <div class="status font-body2"></div>
+                <div class="connection-badge font-body2"></div>
             </label>`
     }
 
@@ -105,10 +152,19 @@ class PeerUI {
         el.querySelector('.device-name').textContent = this._deviceName();
         this.$el = el;
         this.$progress = el.querySelector('.progress');
+        this.$progressBar = el.querySelector('.progress-bar');
+        this.$progressText = el.querySelector('.progress-text');
+        this.$fileInfo = el.querySelector('.file-info');
+        this.$status = el.querySelector('.status');
+        this.$connectionBadge = el.querySelector('.connection-badge');
     }
 
     _bindListeners(el) {
         el.querySelector('input').addEventListener('change', e => this._onFilesSelected(e));
+        el.querySelector('.send-file-btn').addEventListener('click', e => {
+            e.preventDefault();
+            el.querySelector('input').click();
+        });
         el.addEventListener('drop', e => this._onDrop(e));
         el.addEventListener('dragend', e => this._onDragEnd(e));
         el.addEventListener('dragleave', e => this._onDragEnd(e));
@@ -126,7 +182,7 @@ class PeerUI {
     }
 
     _deviceName() {
-        return this._peer.name.deviceName;
+        return 'Device Name: ' + this._peer.name.deviceName;
     }
 
     _icon() {
@@ -150,21 +206,48 @@ class PeerUI {
         $input.value = null; // reset input
     }
 
-    setProgress(progress) {
+    setTransferMeta(transfer) {
+        this.$status.textContent = transfer.direction === 'sending' ? 'Sending...' : 'Receiving...';
+        this.$fileInfo.textContent = `${transfer.name} • ${formatBytes(transfer.size)}`;
+        this._transferStartAt = Date.now();
+        this._lastTransferredBytes = 0;
+        this._lastMeasureAt = this._transferStartAt;
+    }
+
+    setProgress(progressDetail) {
+        const progress = typeof progressDetail === 'number' ? progressDetail : progressDetail.progress;
         if (progress > 0) {
             this.$el.setAttribute('transfer', '1');
         }
-        if (progress > 0.5) {
-            this.$progress.classList.add('over50');
-        } else {
-            this.$progress.classList.remove('over50');
+        this.$progressBar.style.width = `${Math.max(0, Math.min(100, Math.round(progress * 100)))}%`;
+        let speedText = '';
+        if (progressDetail && progressDetail.transferredBytes && this._lastMeasureAt) {
+            const now = Date.now();
+            const deltaBytes = progressDetail.transferredBytes - (this._lastTransferredBytes || 0);
+            const deltaSeconds = (now - this._lastMeasureAt) / 1000;
+            if (deltaBytes > 0 && deltaSeconds > 0) {
+                const speed = deltaBytes / deltaSeconds;
+                speedText = ` • ${formatBytes(Math.round(speed))}/s`;
+            }
+            this._lastTransferredBytes = progressDetail.transferredBytes;
+            this._lastMeasureAt = now;
         }
-        const degrees = `rotate(${360 * progress}deg)`;
-        this.$progress.style.setProperty('--progress', degrees);
+        this.$progressText.textContent = `${Math.round(progress * 100)}%${speedText}`;
         if (progress >= 1) {
-            this.setProgress(0);
-            this.$el.removeAttribute('transfer');
+            this.$status.textContent = 'Completed';
+            setTimeout(() => {
+                this.$el.removeAttribute('transfer');
+                this.$progressBar.style.width = '0%';
+                this.$progressText.textContent = '';
+                this.$fileInfo.textContent = '';
+                this.$status.textContent = '';
+            }, 1200);
         }
+    }
+
+
+    setConnectionBadge(badge) {
+        this.$connectionBadge.textContent = badge;
     }
 
     _onDrop(e) {
@@ -415,7 +498,7 @@ class Notifications {
                 Events.fire('notify-user', Notifications.PERMISSION_ERROR || 'Error');
                 return;
             }
-            this._notify('Even more snappy sharing!');
+            this._notify(window.brandName + ' is ready to notify you.');
             this.$button.setAttribute('hidden', 1);
         });
     }
@@ -423,7 +506,7 @@ class Notifications {
     _notify(message, body) {
         const config = {
             body: body,
-            icon: '/images/logo_transparent_128x128.png',
+            icon: 'assets/logo.svg',
         }
         let notification;
         try {
@@ -520,17 +603,114 @@ class WebShareTargetUI {
 
         if (!shareTargetText) return;
         window.shareTargetText = shareTargetText;
-        history.pushState({}, 'URL Rewrite', '/');
+        history.pushState({}, 'URL Rewrite', './');
         console.log('Shared Target Text:', '"' + shareTargetText + '"');
     }
 }
 
 
-class Snapdrop {
+
+class RoomUI {
+    constructor(server) {
+        this._server = server;
+        this.$roomId = $('roomId');
+        this.$roomQr = $('roomQr');
+        this.$roomLink = $('roomLink');
+        this.$roomState = $('roomState');
+        this.$copy = $('copyRoomLink');
+        this.$regen = $('regenerateRoom');
+        this.$password = $('roomPassword');
+        this.$applyPassword = $('applyRoomPassword');
+        this.$broadcast = $('broadcastFile');
+        this.$broadcastInput = $('broadcastInput');
+
+        this.$copy.addEventListener('click', () => this._copyLink());
+        this.$regen.addEventListener('click', () => this._regenerateRoom());
+        this.$applyPassword.addEventListener('click', () => this._applyPassword());
+        this.$broadcast.addEventListener('click', () => this.$broadcastInput.click());
+        this.$broadcastInput.addEventListener('change', e => this._broadcastFiles(e));
+
+        Events.on('room-state-updated', () => this.render());
+        Events.on('peer-count-changed', e => this._onPeerCount(e.detail));
+        this.render();
+        this._startIdleTimer();
+    }
+
+    render() {
+        const link = roomLinkFromState();
+        this.$roomId.textContent = window.roomState.roomId;
+        this.$roomLink.value = link;
+        const encoded = encodeURIComponent(link);
+        this.$roomQr.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encoded}`;
+    }
+
+    _onPeerCount(count) {
+        if (count > 0) {
+            window.roomState.lastPeerSeenAt = Date.now();
+            this.$roomState.textContent = `${count} device${count > 1 ? 's' : ''} connected in room.`;
+            return;
+        }
+        this.$roomState.textContent = 'Waiting for devices in this room...';
+    }
+
+    _startIdleTimer() {
+        clearInterval(this._idleTimer);
+        this._idleTimer = setInterval(() => {
+            const noPeers = document.querySelectorAll('x-peer').length === 0;
+            if (!noPeers) return;
+            if (Date.now() - window.roomState.lastPeerSeenAt < 4 * 60 * 1000) return;
+            this._regenerateRoom(true);
+        }, 10000);
+    }
+
+    async _applyPassword() {
+        const value = this.$password.value.trim();
+        window.roomState.roomKeyHash = value ? await sha256(value) : '';
+        this._emitRoomUpdate();
+    }
+
+    _regenerateRoom(isAuto = false) {
+        window.roomState.roomId = (Math.random().toString(36).slice(2, 12)).replace(/[^a-z0-9]/gi, '').slice(0, 9);
+        window.roomState.roomKeyHash = '';
+        this.$password.value = '';
+        this._emitRoomUpdate();
+        if (isAuto) Events.fire('notify-user', 'Room expired due to inactivity. Created a new room.');
+    }
+
+    _emitRoomUpdate() {
+        const nextUrl = new URL(window.location.href);
+        nextUrl.searchParams.set('room', window.roomState.roomId);
+        if (window.roomState.roomKeyHash) nextUrl.searchParams.set('key', window.roomState.roomKeyHash);
+        else nextUrl.searchParams.delete('key');
+        history.replaceState({}, '', nextUrl.toString());
+        window.roomState.lastPeerSeenAt = Date.now();
+        Events.fire('room-updated', {
+            roomId: window.roomState.roomId,
+            roomKeyHash: window.roomState.roomKeyHash
+        });
+        this.render();
+        this.$roomState.textContent = 'Room updated. Share the new link or QR code.';
+    }
+
+    async _copyLink() {
+        await navigator.clipboard.writeText(this.$roomLink.value);
+        Events.fire('notify-user', 'Room link copied');
+    }
+
+    _broadcastFiles(e) {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        Events.fire('broadcast-files', files);
+        e.target.value = '';
+    }
+}
+
+class ShiroyaSend {
     constructor() {
         const server = new ServerConnection();
         const peers = new PeersManager(server);
         const peersUI = new PeersUI();
+        const roomUI = new RoomUI(server);
         Events.on('load', e => {
             const receiveDialog = new ReceiveDialog();
             const sendTextDialog = new SendTextDialog();
@@ -543,7 +723,7 @@ class Snapdrop {
     }
 }
 
-const snapdrop = new Snapdrop();
+const shiroyaSend = new ShiroyaSend();
 
 
 
