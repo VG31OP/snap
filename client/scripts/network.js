@@ -1,5 +1,6 @@
 window.URL = window.URL || window.webkitURL;
 window.isRtcSupported = !!(window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection);
+window.APP_CONFIG = window.APP_CONFIG || {};
 
 class ServerConnection {
 
@@ -55,11 +56,14 @@ class ServerConnection {
     }
 
     _endpoint() {
-        // hack to detect if deployment or development environment
-        const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
+        const configuredUrl = (window.APP_CONFIG.SIGNALING_URL || '').trim();
         const webrtc = window.isRtcSupported ? '/webrtc' : '/fallback';
-        const url = protocol + '://' + location.host + location.pathname + 'server' + webrtc;
-        return url;
+        if (configuredUrl) {
+            if (configuredUrl.endsWith('/webrtc') || configuredUrl.endsWith('/fallback')) return configuredUrl;
+            return configuredUrl.replace(/\/$/, '') + '/server' + webrtc;
+        }
+        const protocol = location.protocol.startsWith('https') ? 'wss' : 'ws';
+        return `${protocol}://${location.host}/server${webrtc}`;
     }
 
     _disconnect() {
@@ -118,6 +122,13 @@ class Peer {
     }
 
     _sendFile(file) {
+        this._currentSendFile = file;
+        Events.fire('transfer-start', {
+            peerId: this._peerId,
+            direction: 'sending',
+            name: file.name,
+            size: file.size
+        });
         this.sendJSON({
             type: 'header',
             name: file.name,
@@ -165,7 +176,7 @@ class Peer {
                 this._sendNextPartition();
                 break;
             case 'progress':
-                this._onDownloadProgress(message.progress);
+                this._onDownloadProgress(message.progress, 'sending');
                 break;
             case 'transfer-complete':
                 this._onTransferCompleted();
@@ -178,6 +189,13 @@ class Peer {
 
     _onFileHeader(header) {
         this._lastProgress = 0;
+        this._currentReceiveFileSize = header.size;
+        Events.fire('transfer-start', {
+            peerId: this._peerId,
+            direction: 'receiving',
+            name: header.name,
+            size: header.size
+        });
         this._digester = new FileDigester({
             name: header.name,
             mime: header.mime,
@@ -190,7 +208,7 @@ class Peer {
         
         this._digester.unchunk(chunk);
         const progress = this._digester.progress;
-        this._onDownloadProgress(progress);
+        this._onDownloadProgress(progress, 'receiving');
 
         // occasionally notify sender about our progress 
         if (progress - this._lastProgress < 0.01) return;
@@ -198,8 +216,14 @@ class Peer {
         this._sendProgress(progress);
     }
 
-    _onDownloadProgress(progress) {
-        Events.fire('file-progress', { sender: this._peerId, progress: progress });
+    _onDownloadProgress(progress, direction = 'receiving') {
+        const size = direction === 'sending' && this._currentSendFile ? this._currentSendFile.size : this._currentReceiveFileSize;
+        Events.fire('file-progress', {
+            sender: this._peerId,
+            progress: progress,
+            direction: direction,
+            transferredBytes: size ? Math.round(size * progress) : null
+        });
     }
 
     _onFileReceived(proxyFile) {
@@ -522,7 +546,8 @@ class Events {
 
 RTCPeer.config = {
     'sdpSemantics': 'unified-plan',
-    'iceServers': [{
-        urls: 'stun:stun.l.google.com:19302'
-    }]
+    'iceServers': [
+        ...(window.APP_CONFIG.STUN_SERVERS || []).map(url => ({ urls: url })),
+        ...(window.APP_CONFIG.TURN_SERVERS || [])
+    ]
 }
