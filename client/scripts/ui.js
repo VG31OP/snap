@@ -39,7 +39,6 @@ class PeersUI {
         if ($(peer.id)) return; // peer already exists
         const peerUI = new PeerUI(peer);
         $$('x-peers').appendChild(peerUI.$el);
-        Events.fire('peer-count-changed', $$('x-peers').children.length);
         setTimeout(e => window.animateBackground(false), 1750); // Stop animation
     }
 
@@ -52,7 +51,6 @@ class PeersUI {
         const $peer = $(peerId);
         if (!$peer) return;
         $peer.remove();
-        Events.fire('peer-count-changed', $$('x-peers').children.length);
     }
 
     _onFileProgress(progress) {
@@ -70,7 +68,6 @@ class PeersUI {
 
     _clearPeers() {
         const $peers = $$('x-peers').innerHTML = '';
-        Events.fire('peer-count-changed', 0);
     }
 
     _onPaste(e) {
@@ -109,7 +106,6 @@ class PeerUI {
                 <div class="device-name font-body2"></div>
                 <div class="file-info font-body2"></div>
                 <div class="status font-body2"></div>
-                <div class="connection-badge font-body2"></div>
             </label>`
     }
 
@@ -219,11 +215,6 @@ class PeerUI {
                 this.$status.textContent = '';
             }, 1200);
         }
-    }
-
-
-    setConnectionBadge(badge) {
-        this.$connectionBadge.textContent = badge;
     }
 
     _onDrop(e) {
@@ -590,7 +581,6 @@ class ShiroyaSend {
         const server = new ServerConnection();
         const peers = new PeersManager(server);
         const peersUI = new PeersUI();
-        const roomUI = new RoomUI(server);
         Events.on('load', e => {
             const receiveDialog = new ReceiveDialog();
             const sendTextDialog = new SendTextDialog();
